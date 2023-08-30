@@ -732,6 +732,10 @@ export class MouseController<T> implements IDisposable {
 			return;
 		}
 
+		if (this.isSelectionRangeChangeEvent(e)) {
+			return this.changeSelection(e);
+		}
+
 		if (this.isSelectionChangeEvent(e)) {
 			return this.changeSelection(e);
 		}
