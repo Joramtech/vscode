@@ -8,11 +8,11 @@ import { Disposable, Event, EventEmitter, FileDecoration, FileDecorationProvider
 import { Repository, Resource } from './repository';
 import { IDisposable, deltaHistoryItemRefs, dispose, filterEvent, getCommitShortHash } from './util';
 import { toGitUri } from './uri';
-import { Branch, LogOptions, Ref, RefType } from './api/git';
+import { AvatarQuery, AvatarQueryCommit, Branch, LogOptions, Ref, RefType } from './api/git';
 import { emojify, ensureEmojis } from './emoji';
 import { Commit } from './git';
 import { OperationKind, OperationResult } from './operation';
-import { provideRemoteSourceLinks } from './remoteSource';
+import { ISourceControlHistoryItemDetailsProviderRegistry, provideSourceControlHistoryItemAvatar, provideSourceControlHistoryItemMessageLinks } from './historyItemDetailsProvider';
 
 function toSourceControlHistoryItemRef(repository: Repository, ref: Ref): SourceControlHistoryItemRef {
 	const rootUri = Uri.file(repository.root);
@@ -97,7 +97,11 @@ export class GitHistoryProvider implements SourceControlHistoryProvider, FileDec
 
 	private disposables: Disposable[] = [];
 
-	constructor(protected readonly repository: Repository, private readonly logger: LogOutputChannel) {
+	constructor(
+		private historyItemDetailProviderRegistry: ISourceControlHistoryItemDetailsProviderRegistry,
+		private readonly repository: Repository,
+		private readonly logger: LogOutputChannel
+	) {
 		const onDidRunWriteOperation = filterEvent(repository.onDidRunOperation, e => !e.operation.readOnly);
 		this.disposables.push(onDidRunWriteOperation(this.onDidRunWriteOperation, this));
 
@@ -263,18 +267,33 @@ export class GitHistoryProvider implements SourceControlHistoryProvider, FileDec
 
 			const commits = await this.repository.log({ ...logOptions, silent: true });
 
+			// Avatars
+			const avatarQuery = {
+				commits: commits.map(c => ({
+					hash: c.hash,
+					authorName: c.authorName,
+					authorEmail: c.authorEmail
+				} satisfies AvatarQueryCommit)),
+				size: 20
+			} satisfies AvatarQuery;
+
+			const commitAvatars = await provideSourceControlHistoryItemAvatar(
+				this.historyItemDetailProviderRegistry, this.repository, avatarQuery);
+
 			await ensureEmojis();
 
 			const historyItems: SourceControlHistoryItem[] = [];
 			for (const commit of commits) {
 				const message = emojify(commit.message);
-				const messageWithLinks = await provideRemoteSourceLinks(this.repository, message) ?? message;
+				const messageWithLinks = await provideSourceControlHistoryItemMessageLinks(
+					this.historyItemDetailProviderRegistry, this.repository, message) ?? message;
 
 				const newLineIndex = message.indexOf('\n');
 				const subject = newLineIndex !== -1
 					? `${message.substring(0, newLineIndex)}\u2026`
 					: message;
 
+				const avatarUrl = commitAvatars?.get(commit.hash);
 				const references = this._resolveHistoryItemRefs(commit);
 
 				historyItems.push({
@@ -284,6 +303,7 @@ export class GitHistoryProvider implements SourceControlHistoryProvider, FileDec
 					message: messageWithLinks,
 					author: commit.authorName,
 					authorEmail: commit.authorEmail,
+					authorIcon: avatarUrl ? Uri.parse(avatarUrl) : new ThemeIcon('account'),
 					displayId: getCommitShortHash(Uri.file(this.repository.root), commit.hash),
 					timestamp: commit.authorDate?.getTime(),
 					statistics: commit.shortStat ?? { files: 0, insertions: 0, deletions: 0 },
