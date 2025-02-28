@@ -28,8 +28,9 @@ import { RenderLineInput, renderViewLine } from '../../../../../common/viewLayou
 import { InlineDecorationType } from '../../../../../common/viewModel.js';
 import { GhostText, GhostTextReplacement, IGhostTextLine } from '../../model/ghostText.js';
 import { ColumnRange } from '../../utils.js';
-import { addDisposableListener, isHTMLElement, n } from '../../../../../../base/browser/dom.js';
+import { addDisposableListener, getWindow, isHTMLElement, n } from '../../../../../../base/browser/dom.js';
 import './ghostTextView.css';
+import { IMouseEvent, StandardMouseEvent } from '../../../../../../base/browser/mouseEvent.js';
 
 export interface IGhostTextWidgetModel {
 	readonly targetTextModel: IObservable<ITextModel | undefined>;
@@ -54,7 +55,7 @@ export class GhostTextView extends Disposable {
 		return { lineNumber: gt.lineNumber, position: new Position(gt.lineNumber, gt.parts[0].column), icon: warning.icon };
 	});
 
-	private readonly _onDidClick = this._register(new Emitter<void>());
+	private readonly _onDidClick = this._register(new Emitter<IMouseEvent>());
 	public readonly onDidClick = this._onDidClick.event;
 
 	constructor(
@@ -74,15 +75,14 @@ export class GhostTextView extends Disposable {
 		this._register(this._editorObs.setDecorations(this.decorations));
 
 		if (this._isClickable) {
-			this._register(this._additionalLinesWidget.onDidClick(() => this._onDidClick.fire()));
+			this._register(this._additionalLinesWidget.onDidClick((e) => this._onDidClick.fire(e)));
 			this._register(this._editor.onMouseUp(e => {
 				if (e.target.type !== MouseTargetType.CONTENT_TEXT) {
 					return;
 				}
 				const a = e.target.detail.injectedText?.options.attachedData;
 				if (a instanceof GhostTextAttachedData) {
-					this._onDidClick.fire();
-					e.event.preventDefault();
+					this._onDidClick.fire(e.event);
 				}
 			}));
 		}
@@ -224,7 +224,10 @@ export class GhostTextView extends Disposable {
 					after: {
 						content: p.text,
 						tokens: p.tokens,
-						inlineClassName: p.preview ? 'ghost-text-decoration-preview' : 'ghost-text-decoration' + extraClassNames + p.lineDecorations.map(d => ' ' + d.className).join(' '), // TODO: take the ranges into account for line decorations
+						inlineClassName: (p.preview ? 'ghost-text-decoration-preview' : 'ghost-text-decoration')
+							+ (this._isClickable ? ' clickable' : '')
+							+ extraClassNames
+							+ p.lineDecorations.map(d => ' ' + d.className).join(' '), // TODO: take the ranges into account for line decorations
 						cursorStops: InjectedTextCursorStops.Left,
 						attachedData: new GhostTextAttachedData(),
 					},
@@ -255,7 +258,7 @@ export class GhostTextView extends Disposable {
 	);
 
 	private readonly _isInlineTextHovered = this._editorObs.isTargetHovered(
-		p => p.type === MouseTargetType.CONTENT_TEXT && p.detail.injectedText?.options.attachedData instanceof GhostTextAttachedData,
+		p => p.target.type === MouseTargetType.CONTENT_TEXT && p.target.detail.injectedText?.options.attachedData instanceof GhostTextAttachedData,
 		this._store
 	);
 
@@ -367,13 +370,13 @@ export class AdditionalLinesWidget extends Disposable {
 			|| e.hasChanged(EditorOption.lineHeight)
 	));
 
-	private readonly _onDidClick = this._register(new Emitter<void>());
+	private readonly _onDidClick = this._register(new Emitter<IMouseEvent>());
 	public readonly onDidClick = this._onDidClick.event;
 
 	private readonly _viewZoneListener = this._register(new MutableDisposable());
 
 	readonly isHovered = observableCodeEditor(this._editor).isTargetHovered(
-		p => isTargetGhostText(p.element),
+		p => isTargetGhostText(p.target.element),
 		this._store
 	);
 
@@ -435,9 +438,12 @@ export class AdditionalLinesWidget extends Disposable {
 				renderLines(domNode, tabSize, additionalLines, this._editor.getOptions(), this._isClickable);
 
 				if (this._isClickable) {
-					store.add(addDisposableListener(domNode, 'mouseup', (e) => {
+					store.add(addDisposableListener(domNode, 'mousedown', (e) => {
+						e.preventDefault(); // This prevents that the editor loses focus
+					}));
+					store.add(addDisposableListener(domNode, 'click', (e) => {
 						if (isTargetGhostText(e.target)) {
-							this._onDidClick.fire();
+							this._onDidClick.fire(new StandardMouseEvent(getWindow(e), e));
 						}
 					}));
 				}

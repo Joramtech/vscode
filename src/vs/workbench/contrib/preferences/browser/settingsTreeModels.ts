@@ -971,10 +971,9 @@ export class SearchResultModel extends SettingsTreeModel {
 				// Sort by match type if the match types are not the same.
 				// The priority of the match type is given by the SettingMatchType enum.
 				return b.matchType - a.matchType;
-			} else if (a.matchType === SettingMatchType.KeyMatch) {
-				// The match types are the same and are KeyMatch.
-				// Sort by the number of words matched in the key.
-				// If those are the same, sort by the order in the table of contents.
+			} else if ((a.matchType & SettingMatchType.NonContiguousWordsInSettingsLabel) || (a.matchType & SettingMatchType.ContiguousWordsInSettingsLabel)) {
+				// The match types of a and b are the same and can be sorted by their number of matched words.
+				// If those numbers are the same, sort by the order in the table of contents.
 				return (b.keyMatchScore - a.keyMatchScore) || compareTwoNullableNumbers(a.setting.internalOrder, b.setting.internalOrder);
 			} else if (a.matchType === SettingMatchType.RemoteMatch) {
 				// The match types are the same and are RemoteMatch.
@@ -1057,11 +1056,24 @@ export class SearchResultModel extends SettingsTreeModel {
 			settings: this.getFlatSettings()
 		});
 
-		// Save time, filter children in the search model instead of relying on the tree filter, which still requires heights to be calculated.
+		// Save time by filtering children in the search model instead of relying on the tree filter, which still requires heights to be calculated.
 		const isRemote = !!this.environmentService.remoteAuthority;
 
-		this.root.children = this.root.children
-			.filter(child => child instanceof SettingsTreeSettingElement && child.matchesAllTags(this._viewState.tagFilters) && child.matchesScope(this._viewState.settingsTarget, isRemote) && child.matchesAnyExtension(this._viewState.extensionFilters) && child.matchesAnyId(this._viewState.idFilters) && child.matchesAnyFeature(this._viewState.featureFilters) && child.matchesAllLanguages(this._viewState.languageFilter));
+		const newChildren = [];
+		for (const child of this.root.children) {
+			if (child instanceof SettingsTreeSettingElement
+				&& child.matchesAllTags(this._viewState.tagFilters)
+				&& child.matchesScope(this._viewState.settingsTarget, isRemote)
+				&& child.matchesAnyExtension(this._viewState.extensionFilters)
+				&& child.matchesAnyId(this._viewState.idFilters)
+				&& child.matchesAnyFeature(this._viewState.featureFilters)
+				&& child.matchesAllLanguages(this._viewState.languageFilter)) {
+				newChildren.push(child);
+			} else {
+				child.dispose();
+			}
+		}
+		this.root.children = newChildren;
 		this.searchResultCount = this.root.children.length;
 
 		if (this.newExtensionSearchResults?.filterMatches.length) {
