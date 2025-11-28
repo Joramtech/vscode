@@ -58,6 +58,7 @@ import { IChatService } from '../../chat/common/chatService.js';
 import { IChatRequestVariableEntry, IDiagnosticVariableEntryFilterData } from '../../chat/common/chatVariableEntries.js';
 import { isResponseVM } from '../../chat/common/chatViewModel.js';
 import { ChatAgentLocation } from '../../chat/common/constants.js';
+import { ILanguageModelChatSelector, ILanguageModelsService, isILanguageModelChatSelector } from '../../chat/common/languageModels.js';
 import { isNotebookContainingCellEditor as isNotebookWithCellEditor } from '../../notebook/browser/notebookEditor.js';
 import { INotebookEditorService } from '../../notebook/browser/services/notebookEditorService.js';
 import { ICellEditOperation } from '../../notebook/common/notebookCommon.js';
@@ -91,6 +92,7 @@ const enum Message {
 }
 
 export abstract class InlineChatRunOptions {
+
 	initialSelection?: ISelection;
 	initialRange?: IRange;
 	message?: string;
@@ -98,9 +100,15 @@ export abstract class InlineChatRunOptions {
 	autoSend?: boolean;
 	existingSession?: Session;
 	position?: IPosition;
+	modelSelector?: ILanguageModelChatSelector;
 
-	static isInlineChatRunOptions(options: any): options is InlineChatRunOptions {
-		const { initialSelection, initialRange, message, autoSend, position, existingSession, attachments: attachments } = <InlineChatRunOptions>options;
+	static isInlineChatRunOptions(options: unknown): options is InlineChatRunOptions {
+
+		if (typeof options !== 'object' || options === null) {
+			return false;
+		}
+
+		const { initialSelection, initialRange, message, autoSend, position, existingSession, attachments, modelSelector } = <InlineChatRunOptions>options;
 		if (
 			typeof message !== 'undefined' && typeof message !== 'string'
 			|| typeof autoSend !== 'undefined' && typeof autoSend !== 'boolean'
@@ -109,9 +117,11 @@ export abstract class InlineChatRunOptions {
 			|| typeof position !== 'undefined' && !Position.isIPosition(position)
 			|| typeof existingSession !== 'undefined' && !(existingSession instanceof Session)
 			|| typeof attachments !== 'undefined' && (!Array.isArray(attachments) || !attachments.every(item => item instanceof URI))
+			|| typeof modelSelector !== 'undefined' && !isILanguageModelChatSelector(modelSelector)
 		) {
 			return false;
 		}
+
 		return true;
 	}
 }
@@ -1270,6 +1280,7 @@ export class InlineChatController2 implements IEditorContribution {
 		@IChatAttachmentResolveService private readonly _chatAttachmentResolveService: IChatAttachmentResolveService,
 		@IEditorService private readonly _editorService: IEditorService,
 		@IMarkerDecorationsService private readonly _markerDecorationsService: IMarkerDecorationsService,
+		@ILanguageModelsService private readonly _languageModelService: ILanguageModelsService,
 		@IChatService chatService: IChatService,
 	) {
 
@@ -1443,21 +1454,29 @@ export class InlineChatController2 implements IEditorContribution {
 		this._store.add(autorun(r => {
 			const response = lastResponseObs.read(r);
 
+			this._zone.value.widget.updateInfo('');
+
 			if (!response?.isInProgress.read(r)) {
+
+				if (response?.result?.errorDetails) {
+					// ERROR case
+					this._zone.value.widget.updateInfo(`$(error) ${response.result.errorDetails.message}`);
+					alert(response.result.errorDetails.message);
+				}
+
 				// no response or not in progress
 				this._zone.value.widget.domNode.classList.toggle('request-in-progress', false);
 				this._zone.value.widget.chatWidget.setInputPlaceholder(localize('placeholder', "Edit, refactor, and generate code"));
-				return;
-			}
 
-			this._zone.value.widget.domNode.classList.toggle('request-in-progress', true);
-			let placeholder = response.request?.message.text;
-
-			const lastProgress = lastResponseProgressObs.read(r);
-			if (lastProgress) {
-				placeholder = renderAsPlaintext(lastProgress.content);
+			} else {
+				this._zone.value.widget.domNode.classList.toggle('request-in-progress', true);
+				let placeholder = response.request?.message.text;
+				const lastProgress = lastResponseProgressObs.read(r);
+				if (lastProgress) {
+					placeholder = renderAsPlaintext(lastProgress.content);
+				}
+				this._zone.value.widget.chatWidget.setInputPlaceholder(placeholder || localize('loading', "Working..."));
 			}
-			this._zone.value.widget.chatWidget.setInputPlaceholder(placeholder || localize('loading', "Working..."));
 
 		}));
 
@@ -1512,10 +1531,6 @@ export class InlineChatController2 implements IEditorContribution {
 		this._zone.rawValue?.widget.focus();
 	}
 
-	markActiveController() {
-		this._isActiveController.set(true, undefined);
-	}
-
 	async run(arg?: InlineChatRunOptions): Promise<boolean> {
 		assertType(this._editor.hasModel());
 
@@ -1528,7 +1543,7 @@ export class InlineChatController2 implements IEditorContribution {
 			existingSession.dispose();
 		}
 
-		this.markActiveController();
+		this._isActiveController.set(true, undefined);
 
 		const session = await this._inlineChatSessions.createSession2(this._editor, uri, CancellationToken.None);
 
@@ -1563,6 +1578,17 @@ export class InlineChatController2 implements IEditorContribution {
 					await this._zone.value.widget.chatWidget.attachmentModel.addFile(attachment);
 				}));
 				delete arg.attachments;
+			}
+			if (arg.modelSelector) {
+				const id = (await this._languageModelService.selectLanguageModels(arg.modelSelector, false)).sort().at(0);
+				if (!id) {
+					throw new Error(`No language models found matching selector: ${JSON.stringify(arg.modelSelector)}.`);
+				}
+				const model = this._languageModelService.lookupLanguageModel(id);
+				if (!model) {
+					throw new Error(`Language model not loaded: ${id}.`);
+				}
+				this._zone.value.widget.chatWidget.input.setCurrentLanguageModel({ metadata: model, identifier: id });
 			}
 			if (arg.message) {
 				this._zone.value.widget.chatWidget.setInput(arg.message);
